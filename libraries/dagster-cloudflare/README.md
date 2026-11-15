@@ -21,6 +21,56 @@ Dagster daemon ──HTTPS + token──▶ dispatcher Worker ──▶ Durable 
 pip install dagster-cloudflare
 ```
 
+## How it maps to other run launchers
+
+Every container run launcher answers the same four questions. This table shows
+how `dagster-docker` and `dagster-k8s` answer them, and how this launcher does.
+
+| | `DockerRunLauncher` | `K8sRunLauncher` | `CloudflareContainerRunLauncher` |
+|---|---|---|---|
+| Where runs execute | The Docker daemon the launcher reaches (`docker.from_env()`) | The cluster in the launcher's kube config | A Worker you deploy to your Cloudflare account |
+| Run image | Code location's `DAGSTER_CURRENT_IMAGE`, else `image` | Same, else `job_image` | An image uploaded with the Worker at `wrangler deploy` |
+| Registry access | `registry` login, pulled at launch | `image_pull_secrets`, pulled at launch | None at launch; `wrangler deploy` builds or uploads the image |
+| Run env and secrets | `env_vars`, container config | `env_vars`, `env_secrets`, `env_config_maps` | `env_vars`, and the Worker's `RUN_ENV_JSON` secret |
+
+The Worker is to this launcher what the Helm chart is to `dagster-k8s`: you
+install it once, and the launcher only talks to it.
+
+### The run image
+
+Cloudflare cannot pull an image when a run starts. The image is fixed when you
+deploy the Worker. So the run image and the code location image are two images:
+
+1. Your code server runs your code image and sets `DAGSTER_CURRENT_IMAGE` to it.
+   Dagster stores this value on each run, as with the Docker and K8s launchers.
+2. The Worker's run image is built `FROM` that code image (see
+   [`worker/Dockerfile`](worker/Dockerfile)), and is uploaded by `wrangler deploy`.
+
+If you release a new code image and do not deploy the Worker again, runs use old
+code. To prevent this, set `CODE_IMAGES` in the Worker. The launcher sends the
+run's code image, and the Worker refuses (HTTP 409, the run fails at launch) a
+run whose code image is not the one its run image was built from. Use
+digest-pinned references (`repo@sha256:...`), because the Worker compares strings.
+
+```jsonc
+// wrangler.jsonc: the same reference in two places
+"vars": {"CODE_IMAGES": {"default": "my-registry/app@sha256:<digest>"}},
+"containers": [{"images": {"default": {
+  "dockerfile": "./Dockerfile",
+  "build_vars": {"CODE_IMAGE": "my-registry/app@sha256:<digest>"}
+}}}]
+```
+
+Deploy the Worker in the same CI job that releases the code image. With several
+code locations, add one entry per image to `images` and `CODE_IMAGES`; the Worker
+picks the image built from the run's code image.
+
+Cloudflare builds the Dockerfile at `wrangler deploy`, so the `FROM` image can come
+from any registry the deploy machine can pull from. An `image` entry instead of a
+`dockerfile` must already be in the Cloudflare registry
+(`registry.cloudflare.com/<account>/<repo>@sha256:...`); push it with
+`wrangler containers push`.
+
 ## Requirements
 
 - A Cloudflare account with Containers (Workers Paid plan) and `wrangler`.
@@ -40,13 +90,16 @@ pip install dagster-cloudflare
 
    ```sh
    cd worker
-   # Edit Dockerfile (FROM your code image) and wrangler.jsonc.
+   # Set your code image in wrangler.jsonc (CODE_IMAGES and build_vars).
    wrangler secret put DISPATCH_TOKEN          # any long random string
    wrangler secret put RUN_ENV_JSON            # optional: {"DAGSTER_PG_PASSWORD": "..."}
    wrangler deploy
    ```
 
-2. Configure the launcher in `dagster.yaml`:
+2. Set `DAGSTER_CURRENT_IMAGE` on your code server to the same digest-pinned
+   reference, as you would for the Docker or K8s launcher.
+
+3. Configure the launcher in `dagster.yaml`:
 
    ```yaml
    run_launcher:
@@ -66,7 +119,7 @@ pip install dagster-cloudflare
      enabled: true
    ```
 
-3. Turn on run monitoring (above). The launcher reports the container state to
+4. Turn on run monitoring (above). The launcher reports the container state to
    Dagster, so a container that stops without finishing its run fails the run.
 
 ## Configuration
@@ -76,7 +129,7 @@ pip install dagster-cloudflare
 | `endpoint` | yes | HTTPS URL of the Worker. Plain `http` is accepted only for `localhost`. |
 | `token` | yes | The Worker's `DISPATCH_TOKEN`. |
 | `instance` | no | Instance type (`lite`, `standard-1` .. `standard-4`) or a custom size `{vcpu, memoryMib, diskMb}`. Default: the Worker's `DEFAULT_INSTANCE`. |
-| `image` | no | Name of an image in the Worker's `containers[].images`. Default: the Worker's `DEFAULT_IMAGE`. |
+| `image` | no | Name of an image in the Worker's `containers[].images`. Default: the image built from the run's code image (with `CODE_IMAGES`), else the Worker's `DEFAULT_IMAGE`. |
 | `env_vars` | no | Environment for the run. `KEY` copies the value from the launcher process; `KEY=VALUE` sets it. Merged over the Worker's `RUN_ENV_JSON`. |
 | `request_timeout` | no | Seconds per request to the Worker. Default 30. |
 
@@ -89,8 +142,9 @@ Per-run overrides with run tags:
 
 ## Behavior
 
-- **Launch.** The launcher sends the run's `execute_run` command. If the response is
-  lost, it asks the Worker for the run's state before it reports a failure.
+- **Launch.** The launcher sends the run's `execute_run` command and its code
+  location image. If the response is lost, it asks the Worker for the run's state
+  before it reports a failure.
 - **Health.** Run monitoring reads the state from the Worker. A container that
   exits with code 137 (killed, usually for memory) is reported with that cause.
   With the default multiprocess executor, an out-of-memory kill usually stops
@@ -106,7 +160,7 @@ Per-run overrides with run tags:
   Set Dagster's run queue limit (`max_concurrent_runs`) to match. `max_instances`
   is not accepted for `scheduling_policy: durable_object`; `wrangler` rejects it.
 - The image is fixed at `wrangler deploy` time. Deploy the Worker again when
-  your code image changes.
+  your code image changes (see [The run image](#the-run-image)).
 - Each run pays for container start time; short runs are dominated by it.
 
 ## Try it locally
