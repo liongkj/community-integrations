@@ -12,11 +12,14 @@ function config(env) {
     defaultInstance: env.DEFAULT_INSTANCE || undefined,
     entrypointPrefix: env.ENTRYPOINT_PREFIX ? JSON.parse(env.ENTRYPOINT_PREFIX) : [],
     baseEnv: env.RUN_ENV_JSON ? JSON.parse(env.RUN_ENV_JSON) : {},
+    // Image name -> the code image it was built FROM, e.g. {"default": "repo/app@sha256:..."}.
+    // wrangler passes an object var as an object; a secret or .dev.vars value is a string.
+    codeImages: typeof env.CODE_IMAGES === 'string' ? JSON.parse(env.CODE_IMAGES) : env.CODE_IMAGES ?? null,
   };
 }
 
 export function validateLaunch(payload) {
-  const {command, env = {}, image, instance} = payload ?? {};
+  const {command, env = {}, image, instance, code_image: codeImage} = payload ?? {};
   if (!Array.isArray(command) || !command.every(x => typeof x === 'string'))
     return 'command must be an array of strings';
   // ExecuteRunArgs.get_command_args() ends with: api execute_run <serialized args>.
@@ -25,9 +28,25 @@ export function validateLaunch(payload) {
   if (typeof env !== 'object' || Array.isArray(env) || !Object.values(env).every(v => typeof v === 'string'))
     return 'env must be an object of strings';
   if (image !== undefined && typeof image !== 'string') return 'image must be a string';
+  if (codeImage !== undefined && typeof codeImage !== 'string') return 'code_image must be a string';
   if (instance !== undefined && typeof instance !== 'string' && (typeof instance !== 'object' || Array.isArray(instance)))
     return 'instance must be a type name or {vcpu, memoryMib, diskMb}';
   return null;
+}
+
+// Without CODE_IMAGES: the requested image or DEFAULT_IMAGE, no check.
+// With CODE_IMAGES: an unnamed run gets the image built from its code image, and
+// a run whose code image differs from its image's entry is refused, so a run
+// never executes code older or newer than its code location.
+export function pickImage(cfg, {image, code_image: codeImage}) {
+  const codeImages = cfg.codeImages;
+  if (!codeImages) return {name: image ?? cfg.defaultImage};
+  const name = image ?? Object.keys(codeImages).find(key => codeImages[key] === codeImage) ?? cfg.defaultImage;
+  const expected = codeImages[name];
+  if (expected === undefined || expected === codeImage) return {name};
+  if (codeImage === undefined)
+    return {error: `The run's code location reports no image. Set DAGSTER_CURRENT_IMAGE on the code server to ${expected}.`};
+  return {error: `Image ${JSON.stringify(name)} was built from ${expected}, but the run's code location runs ${codeImage}. Deploy the Worker again from the new code image.`};
 }
 
 async function sha256(value) {
@@ -112,7 +131,9 @@ export class RunObject {
   async launch(payload) {
     const invalid = validateLaunch(payload);
     if (invalid) return {status: 400, body: {error: invalid}};
-    const imageName = payload.image ?? this.cfg.defaultImage;
+    const picked = pickImage(this.cfg, payload);
+    if (picked.error) return {status: 409, body: {error: picked.error}};
+    const imageName = picked.name;
     const image = this.ctx.container.images?.[imageName];
     if (!image) return {status: 400, body: {error: `Unknown image ${JSON.stringify(imageName)}`}};
 

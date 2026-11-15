@@ -140,3 +140,42 @@ test('router checks the token and the run ID shape', async () => {
   assert.equal((await route(anon, env)).status, 401);
   assert.equal((await route(request('GET'), {...env, DISPATCH_TOKEN: ''})).status, 503);
 });
+
+const CODE_IMAGES = JSON.stringify({default: 'code@sha256:aaa', big: 'code@sha256:bbb'});
+
+test('without CODE_IMAGES the code image is not checked', async () => {
+  const {response, ctx} = await launched({}, {command: COMMAND, code_image: 'anything'});
+  assert.equal(response.status, 202);
+  assert.equal(ctx.container.started[0].image, 'registry/default:1');
+});
+
+test('with CODE_IMAGES a run gets the image built from its code image', async () => {
+  const {response, ctx} = await launched({CODE_IMAGES}, {command: COMMAND, code_image: 'code@sha256:bbb'});
+  assert.equal(response.status, 202);
+  assert.equal(ctx.container.started[0].image, 'registry/big:1');
+});
+
+test('a run from another code image is refused and starts nothing', async () => {
+  const {response, body, ctx} = await launched({CODE_IMAGES}, {command: COMMAND, code_image: 'code@sha256:new'});
+  assert.equal(response.status, 409);
+  assert.match(body.error, /built from code@sha256:aaa.*runs code@sha256:new/);
+  assert.equal(ctx.container.started.length, 0);
+});
+
+test('CODE_IMAGES as a wrangler object var works like the JSON string', async () => {
+  const {response} = await launched({CODE_IMAGES: JSON.parse(CODE_IMAGES)}, {command: COMMAND, code_image: 'code@sha256:new'});
+  assert.equal(response.status, 409);
+});
+
+test('a named image must match the code image too', async () => {
+  const {response, ctx} = await launched({CODE_IMAGES}, {command: COMMAND, image: 'big', code_image: 'code@sha256:aaa'});
+  assert.equal(response.status, 409);
+  assert.equal(ctx.container.started.length, 0);
+});
+
+test('a run without a code image is refused when its image has an entry', async () => {
+  const {response, body} = await launched({CODE_IMAGES}, {command: COMMAND});
+  assert.equal(response.status, 409);
+  assert.match(body.error, /DAGSTER_CURRENT_IMAGE/);
+  assert.match(validateLaunch({command: COMMAND, code_image: 1}), /code_image/);
+});

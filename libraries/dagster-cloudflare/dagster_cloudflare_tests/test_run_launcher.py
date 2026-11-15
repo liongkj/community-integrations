@@ -42,8 +42,13 @@ def instance(worker, monkeypatch):
         yield inst
 
 
-def create_run(instance, job_def, tags=None):
+def create_run(instance, job_def, tags=None, code_image=None):
     recon = reconstructable(job_def)
+    if code_image:
+        # What a code server with DAGSTER_CURRENT_IMAGE puts on the run.
+        recon = recon._replace(
+            repository=recon.repository._replace(container_image=code_image)
+        )
     return instance.create_run_for_job(
         job_def=job_def,
         job_code_origin=recon.get_python_origin(),
@@ -81,6 +86,7 @@ def test_launched_run_executes_with_env_and_instance(instance, worker):
     assert payload["env"] == {"FROM_LAUNCHER": "yes", "SET_HERE": "1"}
     assert payload["instance"] == {"vcpu": 2, "memoryMib": 8192}  # tag beats config
     assert "image" not in payload
+    assert "code_image" not in payload
 
     # Dagster records SUCCESS just before the process exits.
     worker.runs[run.run_id].process.wait(timeout=30)
@@ -93,6 +99,13 @@ def test_config_instance_used_without_tag(instance, worker):
     run = create_run(instance, env_job)
     launch(instance, run)
     assert worker.runs[run.run_id].payload["instance"] == "standard-1"
+
+
+def test_code_location_image_is_sent_for_the_worker_check(instance, worker):
+    worker.execute = False
+    run = create_run(instance, env_job, code_image="repo/code@sha256:abc")
+    launch(instance, run)
+    assert worker.runs[run.run_id].payload["code_image"] == "repo/code@sha256:abc"
 
 
 def test_terminate_cancels_a_running_run(instance, worker):

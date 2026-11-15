@@ -7,8 +7,8 @@ Object starts the container, watches it, and reports its state.
 
 Worker HTTP contract (all requests carry ``Authorization: Bearer <token>``):
 
-- ``POST /runs/<run_id>`` with ``{"command", "env", "image", "instance"}``
-  starts the run. Repeating the same request does not start a second
+- ``POST /runs/<run_id>`` with ``{"command", "env", "image", "instance",
+  "code_image"}`` starts the run. ``code_image`` is the code location's image. Repeating the same request does not start a second
   container. Returns ``{"state": ...}``.
 - ``GET /runs/<run_id>`` returns ``{"state", "message", "exitCode"}``.
 - ``DELETE /runs/<run_id>`` stops the container. Returns ``{"terminated"}``.
@@ -275,6 +275,11 @@ class CloudflareContainerRunLauncher(RunLauncher, ConfigurableClass):
         image = run.tags.get(IMAGE_TAG) or self._image
         if image:
             payload["image"] = image
+        # The image the code location runs in (DAGSTER_CURRENT_IMAGE on the code
+        # server). A Worker with CODE_IMAGES refuses a run built from another image.
+        code_image = origin.repository_origin.container_image
+        if code_image:
+            payload["code_image"] = code_image
         if instance:
             payload["instance"] = instance
         return payload
