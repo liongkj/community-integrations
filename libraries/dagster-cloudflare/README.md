@@ -46,10 +46,13 @@ deploy the Worker. So the run image and the code location image are two images:
 2. The Worker's run image is built `FROM` that code image (see
    [`worker/Dockerfile`](worker/Dockerfile)), and is uploaded by `wrangler deploy`.
 
-If you release a new code image and do not deploy the Worker again, runs use old
-code. To prevent this, set `CODE_IMAGES` in the Worker. The launcher sends the
-run's code image, and the Worker refuses (HTTP 409, the run fails at launch) a
-run whose code image is not the one its run image was built from. Use
+As with the ECS run launcher, the run image follows the code location's image.
+The launcher sends the run's code image, and a run whose code location reports
+no image fails at launch, unless `image` or the image tag names one. Set
+`CODE_IMAGES` in the Worker to say which code image each run image was built
+from. The Worker then picks the run image built from the run's code image, and
+refuses the run (HTTP 409, the run fails at launch) when it has none, so a new
+code image without a Worker deploy fails loudly instead of running old code. Use
 digest-pinned references (`repo@sha256:...`), because the Worker compares strings.
 
 ```jsonc
@@ -129,7 +132,7 @@ from any registry the deploy machine can pull from. An `image` entry instead of 
 | `endpoint` | yes | HTTPS URL of the Worker. Plain `http` is accepted only for `localhost`. |
 | `token` | yes | The Worker's `DISPATCH_TOKEN`. |
 | `instance` | no | Instance type (`lite`, `standard-1` .. `standard-4`) or a custom size `{vcpu, memoryMib, diskMb}`. Default: the Worker's `DEFAULT_INSTANCE`. |
-| `image` | no | Name of an image in the Worker's `containers[].images`. Default: the image built from the run's code image (with `CODE_IMAGES`), else the Worker's `DEFAULT_IMAGE`. |
+| `image` | no | Name of an image in the Worker's `containers[].images`. Default: the image built from the run's code image (with `CODE_IMAGES`), else the Worker's `DEFAULT_IMAGE`. Required when the code location sets no `DAGSTER_CURRENT_IMAGE`. |
 | `env_vars` | no | Environment for the run. `KEY` copies the value from the launcher process; `KEY=VALUE` sets it. Merged over the Worker's `RUN_ENV_JSON`. |
 | `request_timeout` | no | Seconds per request to the Worker. Default 30. |
 

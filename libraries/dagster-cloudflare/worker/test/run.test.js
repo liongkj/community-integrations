@@ -158,7 +158,7 @@ test('with CODE_IMAGES a run gets the image built from its code image', async ()
 test('a run from another code image is refused and starts nothing', async () => {
   const {response, body, ctx} = await launched({CODE_IMAGES}, {command: COMMAND, code_image: 'code@sha256:new'});
   assert.equal(response.status, 409);
-  assert.match(body.error, /built from code@sha256:aaa.*runs code@sha256:new/);
+  assert.match(body.error, /No image in this Worker was built from code@sha256:new/);
   assert.equal(ctx.container.started.length, 0);
 });
 

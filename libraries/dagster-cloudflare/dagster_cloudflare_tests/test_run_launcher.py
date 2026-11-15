@@ -2,14 +2,14 @@ import json
 import time
 
 import pytest
-from dagster import reconstructable
+from dagster import DagsterInvariantViolationError, reconstructable
 from dagster._check import CheckError
 from dagster._core.launcher.base import LaunchRunContext, WorkerStatus
 from dagster._core.storage.dagster_run import DagsterRunStatus
 from dagster._core.test_utils import instance_for_test
 
 from dagster_cloudflare import CloudflareContainerRunLauncher
-from dagster_cloudflare.containers.run_launcher import INSTANCE_TAG
+from dagster_cloudflare.containers.run_launcher import IMAGE_TAG, INSTANCE_TAG
 from dagster_cloudflare_tests.fake_worker import TOKEN, FakeRun, FakeWorker
 from dagster_cloudflare_tests.jobs import env_job, slow_job
 
@@ -42,7 +42,10 @@ def instance(worker, monkeypatch):
         yield inst
 
 
-def create_run(instance, job_def, tags=None, code_image=None):
+CODE_IMAGE = "repo/code@sha256:abc"
+
+
+def create_run(instance, job_def, tags=None, code_image=CODE_IMAGE):
     recon = reconstructable(job_def)
     if code_image:
         # What a code server with DAGSTER_CURRENT_IMAGE puts on the run.
@@ -86,7 +89,7 @@ def test_launched_run_executes_with_env_and_instance(instance, worker):
     assert payload["env"] == {"FROM_LAUNCHER": "yes", "SET_HERE": "1"}
     assert payload["instance"] == {"vcpu": 2, "memoryMib": 8192}  # tag beats config
     assert "image" not in payload
-    assert "code_image" not in payload
+    assert payload["code_image"] == CODE_IMAGE
 
     # Dagster records SUCCESS just before the process exits.
     worker.runs[run.run_id].process.wait(timeout=30)
@@ -101,11 +104,20 @@ def test_config_instance_used_without_tag(instance, worker):
     assert worker.runs[run.run_id].payload["instance"] == "standard-1"
 
 
-def test_code_location_image_is_sent_for_the_worker_check(instance, worker):
+def test_run_without_code_location_image_fails_at_launch(instance, worker):
+    run = create_run(instance, env_job, code_image=None)
+    with pytest.raises(DagsterInvariantViolationError, match="DAGSTER_CURRENT_IMAGE"):
+        launch(instance, run)
+    assert run.run_id not in worker.runs
+
+
+def test_named_image_is_enough_without_code_location_image(instance, worker):
     worker.execute = False
-    run = create_run(instance, env_job, code_image="repo/code@sha256:abc")
+    run = create_run(instance, env_job, tags={IMAGE_TAG: "big"}, code_image=None)
     launch(instance, run)
-    assert worker.runs[run.run_id].payload["code_image"] == "repo/code@sha256:abc"
+    payload = worker.runs[run.run_id].payload
+    assert payload["image"] == "big"
+    assert "code_image" not in payload
 
 
 def test_terminate_cancels_a_running_run(instance, worker):

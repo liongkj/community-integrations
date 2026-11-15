@@ -34,19 +34,25 @@ export function validateLaunch(payload) {
   return null;
 }
 
-// Without CODE_IMAGES: the requested image or DEFAULT_IMAGE, no check.
-// With CODE_IMAGES: an unnamed run gets the image built from its code image, and
-// a run whose code image differs from its image's entry is refused, so a run
-// never executes code older or newer than its code location.
+// Like the ECS run launcher, the run image follows the code location's image.
+// With CODE_IMAGES, a run gets the image built from its code image; a run whose
+// code image has no image in this Worker, or a named image built from another
+// code image, is refused, so a run never executes code other than its code
+// location's. Without CODE_IMAGES: the requested image or DEFAULT_IMAGE, no check.
 export function pickImage(cfg, {image, code_image: codeImage}) {
   const codeImages = cfg.codeImages;
   if (!codeImages) return {name: image ?? cfg.defaultImage};
-  const name = image ?? Object.keys(codeImages).find(key => codeImages[key] === codeImage) ?? cfg.defaultImage;
-  const expected = codeImages[name];
-  if (expected === undefined || expected === codeImage) return {name};
-  if (codeImage === undefined)
-    return {error: `The run's code location reports no image. Set DAGSTER_CURRENT_IMAGE on the code server to ${expected}.`};
-  return {error: `Image ${JSON.stringify(name)} was built from ${expected}, but the run's code location runs ${codeImage}. Deploy the Worker again from the new code image.`};
+  if (image === undefined) {
+    if (codeImage === undefined)
+      return {error: 'The run has no code location image. Set DAGSTER_CURRENT_IMAGE on the code server.'};
+    const name = Object.keys(codeImages).find(key => codeImages[key] === codeImage);
+    if (name === undefined)
+      return {error: `No image in this Worker was built from ${codeImage}. Deploy the Worker with an image built from it.`};
+    return {name};
+  }
+  const expected = codeImages[image];
+  if (expected === undefined || expected === codeImage) return {name: image};
+  return {error: `Image ${JSON.stringify(image)} was built from ${expected}, but the run's code location runs ${codeImage ?? 'no image'}.`};
 }
 
 async function sha256(value) {

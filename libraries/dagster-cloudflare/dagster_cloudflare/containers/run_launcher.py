@@ -27,6 +27,7 @@ from typing import Any
 from urllib.parse import quote, urlsplit
 
 from dagster import (
+    DagsterInvariantViolationError,
     Field,
     IntSource,
     Noneable,
@@ -272,12 +273,18 @@ class CloudflareContainerRunLauncher(RunLauncher, ConfigurableClass):
             "command": list(command),
             "env": _env_from_names(self._env_vars),
         }
+        # Like the ECS run launcher, the run image follows the code location's
+        # image (DAGSTER_CURRENT_IMAGE on the code server). The Worker picks the
+        # image built from it, unless a run tag or `image` names one.
         image = run.tags.get(IMAGE_TAG) or self._image
+        code_image = origin.repository_origin.container_image
+        if not image and not code_image:
+            raise DagsterInvariantViolationError(
+                "Could not determine the image for the run. Set DAGSTER_CURRENT_IMAGE on the "
+                "code server, or set `image` in the launcher config."
+            )
         if image:
             payload["image"] = image
-        # The image the code location runs in (DAGSTER_CURRENT_IMAGE on the code
-        # server). A Worker with CODE_IMAGES refuses a run built from another image.
-        code_image = origin.repository_origin.container_image
         if code_image:
             payload["code_image"] = code_image
         if instance:
