@@ -68,6 +68,20 @@ Deploy the Worker in the same CI job that releases the code image. With several
 code locations, add one entry per image to `images` and `CODE_IMAGES`; the Worker
 picks the image built from the run's code image.
 
+To release a new code image without refused runs, keep the old and the new image
+in the Worker for one release:
+
+1. Deploy the Worker with both images, for example `release-41` (old) and
+   `release-42` (new), each with its `CODE_IMAGES` entry and `build_vars`.
+2. Change the code server to the new image. New runs get `release-42`; runs that
+   were queued with the old code location still get `release-41`.
+3. When no run from the old code image is queued, deploy the Worker without
+   `release-41`.
+
+A deploy does not stop running containers; each keeps the image it started with.
+The first run after a deploy can start slower while Cloudflare gets the new image
+(about 30 seconds instead of under 1 second in our test).
+
 Cloudflare builds the Dockerfile at `wrangler deploy`, so the `FROM` image can come
 from any registry the deploy machine can pull from. An `image` entry instead of a
 `dockerfile` must already be in the Cloudflare registry
